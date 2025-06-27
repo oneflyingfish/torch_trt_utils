@@ -2,6 +2,8 @@ import time
 import time
 import inspect
 
+TIME_PERF = True
+
 
 class TimeStamp:
     def __init__(self):
@@ -53,7 +55,7 @@ class TimeStamp:
 gtime_stamp = TimeStamp()
 
 
-def test_time(enable=True):
+def test_time(enable=TIME_PERF):
     def wrapper0(func):
         def wrapper(*args, **kwargs):
             if enable:
