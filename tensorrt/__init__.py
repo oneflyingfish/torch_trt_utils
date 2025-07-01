@@ -1,2 +1,2 @@
-from memory import *
-from quant import *
+from .memory import *
+from .quant import *

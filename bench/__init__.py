@@ -1,1 +1,1 @@
-from time_bench import test_time, TimeStamp
+from .time_bench import test_time, TimeStamp

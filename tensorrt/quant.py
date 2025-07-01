@@ -7,13 +7,13 @@ import onnx
 from tensorrt import CalibrationAlgoType
 import time
 from PIL import Image
-from typing import Optional
+from typing import Optional, List
 import cv2
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
 
-class CalibratorDataset:
+class CalibratorDatasetObject:
     def __init__(self):
         self.datasets = []
 
@@ -25,24 +25,38 @@ class CalibratorDataset:
             return 0
         return len(self.datasets)
 
-    def shape(self) -> Optional[tuple]:
+    def shape(self, input_id=0) -> Optional[tuple]:
         if len(self) < 1:
             return None
-        return self.datasets[0].shape
+        return self.datasets[0][input_id].shape
 
-    def __getitem__(self, index) -> Optional[np.ndarray]:
+    def dtype(self, input_id=0) -> np.dtype:
+        if len(self) < 1:
+            return None
+        return self.datasets[0][input_id].dtype
+
+    def __getitem__(self, index) -> Optional[List[np.ndarray]]:
         if index < self.datasize:
             return self.datasets[index]
         else:
             return None
 
+    def input_count(self):
+        if self.datasets is None:
+            return 0
+        else:
+            return len(self.datasets[0])
+
     @property
     def datasize(self):
         return len(self)
 
+    @property
+    def batch_count(self):
+        return len(self)
 
 class MyEntropyCalibrator(trt.IInt8EntropyCalibrator2):
-    def __init__(self, data_loader: CalibratorDataset, cache_file="int8.cache"):
+    def __init__(self, data_loader: CalibratorDatasetObject, cache_file="int8.cache"):
         super(MyEntropyCalibrator, self).__init__()
         self.data_loader = data_loader
         self.cache_file = cache_file
@@ -50,22 +64,26 @@ class MyEntropyCalibrator(trt.IInt8EntropyCalibrator2):
         assert self.batch_size > 0, "empty CalibratorDataset"
 
         self.current_index = 0
-        print(trt.volume(self.data_loader[0].shape), self.data_loader[0].dtype.itemsize)
-        self.device_input = cuda.mem_alloc(
-            trt.volume(self.data_loader[0].shape) * self.data_loader[0].dtype.itemsize
-        )
+        self.device_inputs = [
+            cuda.mem_alloc(
+                trt.volume(self.data_loader[0][i].shape)
+                * self.data_loader[0][i].dtype.itemsize
+            )
+            for i in range(self.data_loader.input_count())
+        ]
 
     def get_batch_size(self):
         return self.batch_size
 
-    def get_batch(self, names=["images"]):
+    def get_batch(self, names=None):
         if self.current_index >= len(self.data_loader):
             return None
 
         batch = self.data_loader[self.current_index]
-        cuda.memcpy_htod(self.device_input, batch)
+        for i in range(self.data_loader.input_count()):
+            cuda.memcpy_htod(self.device_inputs[i], batch[i])
         self.current_index += 1
-        return [int(self.device_input)]
+        return [int(device) for device in self.device_inputs]
 
     def read_calibration_cache(self):
         if os.path.exists(self.cache_file):
