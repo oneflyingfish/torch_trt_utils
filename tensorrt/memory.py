@@ -1,17 +1,33 @@
 import torch
 import pycuda.driver as cuda
-import numpy as np
 import tensorrt as trt
+import numpy as np
 
 
 class HostDeviceMem(object):
-    def __init__(self, max_shape, dtype: np.dtype, stream: cuda.Stream):
-        self.dtype = dtype
+    def __init__(self, max_shape, dtype: np.dtype, stream: cuda.Stream = None):
+        self.dtype = dtype  # np.dtype
         self.current_shape = max_shape
         self.max_shape = max_shape
         self.host = cuda.pagelocked_empty((trt.volume(max_shape),), self.dtype)
         self.device = cuda.mem_alloc(self.host.nbytes)
-        self.stream = stream
+
+        if stream is None:
+            self.stream = cuda.Stream()
+        else:
+            self.stream = stream
+
+        self.dtype_mapping = {
+            np.float16: torch.float16,
+            np.float32: torch.float32,
+            np.float64: torch.float64,
+            np.int8: torch.int8,
+            np.int16: torch.int16,
+            np.int32: torch.int32,
+            np.int64: torch.int64,
+            np.uint8: torch.uint8,
+            np.bool_: torch.bool,
+        }  # type:dict
 
     def shape_element_size(self, shape) -> int:
         return trt.volume(shape)
@@ -54,10 +70,17 @@ class HostDeviceMem(object):
             )
             self.stream.synchronize()
 
-    def read_torch(self) -> torch.Tensor:
+    def numpy2torch_type(self, type) -> torch.dtype:
+        torch_type = self.dtype_mapping.get(type)
+        assert torch_type is not None, "unsupported type"
+
+        return torch_type
+
+    def read_torch(self, dtype: torch.dtype = None) -> torch.Tensor:
         result = torch.empty(
             size=self.current_shape,
             memory_format=torch.contiguous_format,
+            dtype=self.numpy2torch_type(self.dtype) if dtype is None else dtype,
             device=f"cuda:0",
         )
 
@@ -68,6 +91,7 @@ class HostDeviceMem(object):
             self.stream,
         )
         self.stream.synchronize()
+        return result
 
     def read_numpy(self) -> np.ndarray:
         cuda.memcpy_dtoh_async(self.host, int(self.device), self.stream)

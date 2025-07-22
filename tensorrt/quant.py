@@ -8,14 +8,19 @@ from tensorrt import CalibrationAlgoType
 import time
 from PIL import Image
 from typing import Optional, List
-import cv2
+from abc import ABC, abstractmethod
+from .memory import HostDeviceMem
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
 
-class CalibratorDatasetObject:
+class CalibratorDatasetObject(ABC):
     def __init__(self):
         self.datasets = []
+        self.names = []
+
+    def get_index_by_name(self, name: str):
+        return self.names.index(name)
 
     def data(self) -> list:
         return self.datasets
@@ -55,6 +60,7 @@ class CalibratorDatasetObject:
     def batch_count(self):
         return len(self)
 
+
 class MyEntropyCalibrator(trt.IInt8EntropyCalibrator2):
     def __init__(self, data_loader: CalibratorDatasetObject, cache_file="int8.cache"):
         super(MyEntropyCalibrator, self).__init__()
@@ -64,10 +70,18 @@ class MyEntropyCalibrator(trt.IInt8EntropyCalibrator2):
         assert self.batch_size > 0, "empty CalibratorDataset"
 
         self.current_index = 0
+
+        self.stream = cuda.Stream()
+        # cuda.mem_alloc(
+        #     trt.volume(self.data_loader[0][i].shape)
+        #     * self.data_loader[0][i].dtype.itemsize
+        # )
+
         self.device_inputs = [
-            cuda.mem_alloc(
-                trt.volume(self.data_loader[0][i].shape)
-                * self.data_loader[0][i].dtype.itemsize
+            HostDeviceMem(
+                self.data_loader[0][i].shape,
+                self.data_loader[0][i].dtype,
+                stream=self.stream,
             )
             for i in range(self.data_loader.input_count())
         ]
@@ -80,10 +94,18 @@ class MyEntropyCalibrator(trt.IInt8EntropyCalibrator2):
             return None
 
         batch = self.data_loader[self.current_index]
+
         for i in range(self.data_loader.input_count()):
-            cuda.memcpy_htod(self.device_inputs[i], batch[i])
+            self.device_inputs[i].set_numpy(batch[i])
+            # cuda.memcpy_htod(self.device_inputs[i], batch[i])
         self.current_index += 1
-        return [int(device) for device in self.device_inputs]
+
+        index_order = []
+        if names is None:
+            index_order = list(range(self.data_loader.input_count()))
+        else:
+            index_order = [self.data_loader.get_index_by_name(name) for name in names]
+        return [self.device_inputs[index].ptr() for index in index_order]
 
     def read_calibration_cache(self):
         if os.path.exists(self.cache_file):
@@ -158,29 +180,29 @@ def save_engine(
     print(f"TensorRT engine saved as {trt_model_path}")
 
 
-if __name__ == "__main__":
-    input_model_path = "model/yolov11m_dynamic.onnx"
-    output_model_path = "model/yolov11m_dynamic.engine"
+# if __name__ == "__main__":
+#     input_model_path = "model/yolov11m_dynamic.onnx"
+#     output_model_path = "model/yolov11m_dynamic.engine"
 
-    calibration_dataset_path = "dataset/"  # some *.mp4 videos in fold that can run yolo , need no special name and ratio
-    data_set = CalibratorDataset(
-        calibration_dataset_path,
-        input_shape=(-1, 3, 640, 640),
-        batch_size=1,
-        skip_frame=20,
-        dataset_limit=1 * 1000,
-    )
-    calibrator = MyEntropyCalibrator(
-        data_loader=data_set, cache_file="model/yolov11m_dynamic.cache"
-    )
+#     calibration_dataset_path = "dataset/"  # some *.mp4 videos in fold that can run yolo , need no special name and ratio
+#     data_set = CalibratorDataset(
+#         calibration_dataset_path,
+#         input_shape=(-1, 3, 640, 640),
+#         batch_size=1,
+#         skip_frame=20,
+#         dataset_limit=1 * 1000,
+#     )
+#     calibrator = MyEntropyCalibrator(
+#         data_loader=data_set, cache_file="model/yolov11m_dynamic.cache"
+#     )
 
-    save_engine(
-        input_model_path,
-        output_model_path,
-        fp16_mode=True,
-        int8_mode=True,
-        min_batch=1,
-        optimize_batch=1,
-        max_batch=20,
-        calibrator=calibrator,
-    )
+#     save_engine(
+#         input_model_path,
+#         output_model_path,
+#         fp16_mode=True,
+#         int8_mode=True,
+#         min_batch=1,
+#         optimize_batch=1,
+#         max_batch=20,
+#         calibrator=calibrator,
+#     )
