@@ -4,6 +4,7 @@ from ..executor import ModelExectuor, TensorDesc, TensorDataType
 import onnx
 import numpy as np
 import torch
+import os
 
 
 class OnnxRuntimeExecutor(ModelExectuor):
@@ -17,11 +18,15 @@ class OnnxRuntimeExecutor(ModelExectuor):
                 "CUDAExecutionProvider",
                 "CPUExecutionProvider",
             ]
-            
+
         if isinstance(model_paths, str):
             model_paths = [model_paths]
 
         self.onnx_path = model_paths[0]
+
+        assert os.path.exists(
+            self.onnx_path
+        ), f"model path {self.onnx_path} does not exists!"
 
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = (
@@ -55,6 +60,8 @@ class OnnxRuntimeExecutor(ModelExectuor):
             )
 
     def Inference(self, inputs: list, output_type="numpy") -> list:
+        assert self.ort_session is not None, "executor not init"
+
         input_desc = self.GetModelInputDesc()
         output_desc = self.GetModelOutputDesc()
 
@@ -109,3 +116,9 @@ class OnnxRuntimeExecutor(ModelExectuor):
             "tensor(complex64)": TensorDataType.COMPLEX64,
             "tensor(complex128)": TensorDataType.COMPLEX128,
         }
+
+    def Release(self):
+        self.ort_session = None
+
+        self.inputs_desc = []
+        self.outputs_desc = []

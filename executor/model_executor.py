@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional, List, Tuple
+from typing import Dict, List, Tuple
 from enum import Enum, auto
 import numpy as np
 
@@ -132,6 +132,9 @@ class ModelExectuor(ABC):
         for _ in range(times):
             self.Inference(inputs)
 
+    def SetInputShapes(self, shapes: Dict[str, List[int]] | List[List[int]]):
+        pass
+
     @abstractmethod
     def Inference(self, inputs: list, output_type="numpy") -> list:
         return []
@@ -154,3 +157,7 @@ class ModelExectuor(ABC):
         for desc in self.GetModelOutputDesc():
             print(desc)
         print("________________________")
+
+    @abstractmethod
+    def Release(self):
+        pass
