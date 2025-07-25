@@ -1,4 +1,5 @@
 import torch
+import pycuda.autoinit
 import pycuda.driver as cuda
 from typing import List, Tuple, Dict
 import numpy as np
@@ -30,13 +31,13 @@ class TensorRTExecutor(ModelExectuor):
         ), f"model path {self.engine_path} does not exists!"
 
         # init torch context
-        a = torch.randn(size=(1, 1), device=torch.device("cuda:0"))
+        a = torch.randn(size=(1, 1), device=torch.device(f"cuda:{cuda_id}"))
         del a
 
-        cuda.init()
+        # cuda.init()
         self.gpu_id = cuda_id
-        self.gpu = cuda.Device(self.gpu_id)
-        self.cuda_ctx = self.gpu.make_context()
+        # self.gpu = cuda.Device(self.gpu_id)
+        # self.cuda_ctx = self.gpu.make_context()
 
         self.trt_logger = trt.Logger(trt.Logger.WARNING)
         self.trt_runtime = trt.Runtime(self.trt_logger)
@@ -45,12 +46,16 @@ class TensorRTExecutor(ModelExectuor):
             self.trt_engine = self.trt_runtime.deserialize_cuda_engine(f.read())
 
         self.trt_context = self.trt_engine.create_execution_context()
-        self.cuda_stream = cuda.Stream()
 
         self.torch_device = torch.device(f"cuda:{self.gpu_id}")
-        self.torch_stream = torch.cuda.ExternalStream(
-            self.cuda_stream.handle, device=self.torch_device
-        )
+
+        # self.cuda_stream = cuda.Stream()
+        # self.torch_stream = torch.cuda.ExternalStream(
+        #     self.cuda_stream.handle, device=self.torch_device
+        # )
+
+        self.torch_stream = torch.cuda.current_stream()
+        self.cuda_stream = cuda.Stream(self.torch_stream.cuda_stream)
 
         # init desc from engine file
         self.inputs_desc = []  # type:List[TensorDesc]
@@ -100,11 +105,7 @@ class TensorRTExecutor(ModelExectuor):
                 self.current_inputs_shape = {f"{name}": None}
 
             elif io_mode == trt.TensorIOMode.OUTPUT:
-                desc = TensorDesc(
-                    name=name,
-                    shape=shape,
-                    dtype=dtype,
-                )
+                desc = TensorDesc(name=name, shape=shape, dtype=dtype)
 
                 self.name_to_index[name] = len(self.outputs_desc)
                 self.outputs_desc.append(desc)
@@ -122,10 +123,17 @@ class TensorRTExecutor(ModelExectuor):
 
             for desc in self.outputs_desc:
                 if desc.dynamic_desc is None:
-                    desc.dynamic_desc = {}
+                    desc.dynamic_desc = dict()
                 desc.dynamic_desc[type_str] = [
                     int(dim) for dim in self.trt_context.get_tensor_shape(desc.name)
                 ]
+                print(
+                    f"add {type_str} {desc.name}: {self.trt_context.get_tensor_shape(desc.name)}"
+                )
+
+                print(
+                    f"{type_str} {desc.name}: {desc.dynamic_desc}, {id(desc)} {id(desc.dynamic_desc)}, {id(desc.dynamic_desc[type_str])}"
+                )
 
         # self.cuda_ctx_pushed = False
 
@@ -195,18 +203,15 @@ class TensorRTExecutor(ModelExectuor):
                 self.inputs_mem[i].set_numpy(tensor)
             else:
                 self.inputs_mem[i].set_torch(tensor)
+
         self.trt_context.execute_async_v3(
             stream_handle=self.cuda_stream.handle,
         )
 
         if output_type == "numpy":
-            return [
-                self.outputs_mem[i].read_numpy() for i in range(len(self.outputs_mem))
-            ]
+            return [mem.read_numpy() for mem in self.outputs_mem]
         elif output_type == "torch":
-            return [
-                self.outputs_mem[i].read_torch() for i in range(len(self.outputs_mem))
-            ]
+            return [mem.read_torch() for mem in self.outputs_mem]
         else:
             raise Exception("unsupport output_type")
 
@@ -219,11 +224,11 @@ class TensorRTExecutor(ModelExectuor):
     def TrtDataTypeToTensorDataType(self, type) -> TensorDataType:
         return TensorDataType.from_numpy_type(trt.nptype(type))
 
-    def push_ctx(self):
-        self.cuda_ctx.push()
+    # def push_ctx(self):
+    #     self.cuda_ctx.push()
 
-    def pop_ctx(self):
-        self.cuda_ctx.pop()
+    # def pop_ctx(self):
+    #     self.cuda_ctx.pop()
 
     def Release(self):
         if self.torch_stream is not None:
@@ -239,9 +244,9 @@ class TensorRTExecutor(ModelExectuor):
             self.trt_engine = None
             self.trt_runtime = None
 
-        if self.cuda_ctx is not None:
-            self.cuda_ctx.detach()
-            self.cuda_ctx = None
+        # if self.cuda_ctx is not None:
+        #     self.cuda_ctx.detach()
+        #     self.cuda_ctx = None
 
     def __del__(self):
         self.Release()

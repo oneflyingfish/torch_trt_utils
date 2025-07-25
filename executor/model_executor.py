@@ -108,12 +108,18 @@ class TensorDataType(Enum):
 
 
 class TensorDesc:
-    def __init__(self, name, shape, dtype=TensorDataType.FLOAT32, dynamic_desc={}):
-        self.name: str = name
-        self.shape: Tuple[int] = shape
-        self.dtype: TensorDataType = dtype
+    def __init__(
+        self,
+        name: str,
+        shape: Tuple[int],
+        dtype: TensorDataType = TensorDataType.FLOAT32,
+        dynamic_desc: dict = None,
+    ):
+        self.name = name
+        self.shape = shape
+        self.dtype = dtype
 
-        self.dynamic_desc: dict = dynamic_desc
+        self.dynamic_desc = dynamic_desc if dynamic_desc is not None else dict()
 
     def __str__(self):
         if len(self.dynamic_desc) > 0:
