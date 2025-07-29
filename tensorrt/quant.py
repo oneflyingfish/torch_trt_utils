@@ -10,6 +10,7 @@ from PIL import Image
 from typing import Optional, List
 from abc import ABC, abstractmethod
 from .memory import HostDeviceMem
+from copy import deepcopy
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
@@ -127,7 +128,7 @@ def save_engine(
     optimize_batch=1,
     max_batch=1,
     calibrator=None,
-):
+) -> bool:
     onnx_model = onnx.load(onnx_file_path)
     builder = trt.Builder(TRT_LOGGER)
     network = builder.create_network(
@@ -140,7 +141,7 @@ def save_engine(
             print("ERROR: Failed to parse the ONNX file.")
             for error in range(parser.num_errors):
                 print(parser.get_error(error))
-            return None
+            return False
 
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, max_workspace_size)
@@ -173,11 +174,100 @@ def save_engine(
     serialized_engine = builder.build_serialized_network(network, config)
     if serialized_engine is None:
         print("Failed to build serialized engine.")
-        return None
+        return False
 
     with open(trt_model_path, "wb") as f:
         f.write(serialized_engine)
     print(f"TensorRT engine saved as {trt_model_path}")
+    return True
+
+
+def save_engine_mixed_inputs(
+    onnx_file_path,
+    trt_model_path,
+    max_workspace_size=1 << 30,
+    fp16_mode=True,
+    int8_mode=False,
+    dynamic_axes=None,
+    calibrator=None,
+):
+    onnx_model = onnx.load(onnx_file_path)
+    builder = trt.Builder(TRT_LOGGER)
+    network = builder.create_network(
+        flags=1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    )
+    parser = trt.OnnxParser(network, TRT_LOGGER)
+
+    with open(onnx_file_path, "rb") as model:
+        if not parser.parse(model.read()):
+            print("ERROR: Failed to parse the ONNX file.")
+            for error in range(parser.num_errors):
+                print(parser.get_error(error))
+            return False
+
+    config = builder.create_builder_config()
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, max_workspace_size)
+
+    if fp16_mode and builder.platform_has_fast_fp16:
+        config.set_flag(trt.BuilderFlag.FP16)
+
+    if int8_mode and builder.platform_has_fast_int8:
+        assert calibrator is not None, "ERROR: no calibration_set."
+        config.int8_calibrator = calibrator
+        config.set_flag(trt.BuilderFlag.INT8)
+
+    profile = builder.create_optimization_profile()
+    for input_node in onnx_model.graph.input:
+        onnx_input_name = input_node.name
+        onnx_input_shape = [
+            dim.dim_value for dim in input_node.type.tensor_type.shape.dim
+        ]
+
+        # support_dynamic = False
+        # for v in onnx_input_shape:
+        #     if not isinstance(v, int) or v < 1:
+        #         support_dynamic = True
+        #         break
+        # if not support_dynamic:
+        #     continue
+
+        min_shape = deepcopy(onnx_input_shape)
+        opt_shape = deepcopy(onnx_input_shape)
+        max_shape = deepcopy(onnx_input_shape)
+        if dynamic_axes is not None:
+            if onnx_input_name in dynamic_axes:
+                if "min" in dynamic_axes[onnx_input_name]:
+                    for axis in dynamic_axes[onnx_input_name]["min"]:
+                        min_shape[axis] = dynamic_axes[onnx_input_name]["min"][axis]
+
+                if "opt" in dynamic_axes[onnx_input_name]:
+                    for axis in dynamic_axes[onnx_input_name]["opt"]:
+                        opt_shape[axis] = dynamic_axes[onnx_input_name]["opt"][axis]
+
+                if "max" in dynamic_axes[onnx_input_name]:
+                    for axis in dynamic_axes[onnx_input_name]["max"]:
+                        max_shape[axis] = dynamic_axes[onnx_input_name]["max"][axis]
+
+        min_shape = tuple(min_shape)
+        opt_shape = tuple(opt_shape)
+        max_shape = tuple(max_shape)
+
+        for check_shape in [min_shape, opt_shape, max_shape]:
+            for v in check_shape:
+                assert (
+                    isinstance(v, int) and v > 0
+                ), f"need to give range for {onnx_input_name}, get {[min_shape, opt_shape, max_shape]}"
+        profile.set_shape(onnx_input_name, min_shape, opt_shape, max_shape)
+    config.add_optimization_profile(profile)
+
+    serialized_engine = builder.build_serialized_network(network, config)
+    if serialized_engine is None:
+        print("Failed to build serialized engine.")
+        return False
+
+    with open(trt_model_path, "wb") as f:
+        f.write(serialized_engine)
+    return True
 
 
 # if __name__ == "__main__":

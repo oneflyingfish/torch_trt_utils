@@ -8,14 +8,11 @@ import tensorrt as trt
 import os
 from typing import Optional, List
 from ..executor import ModelExectuor, TensorDesc, TensorDataType
+from ytools.tensorrt import save_engine_mixed_inputs
 
 
 class TensorRTExecutor(ModelExectuor):
-    def __init__(
-        self,
-        model_paths: List[str] | str = [],
-        cuda_id=0,
-    ):
+    def __init__(self, model_paths: List[str] | str = [], cuda_id=0, build_args={}):
         if cuda_id != 0:
             print(
                 f"warning: device!=0 may meet error at this time, use export CUDA_VISIBLE_DEVICES={cuda_id} instead is suggested."
@@ -42,6 +39,17 @@ class TensorRTExecutor(ModelExectuor):
         self.trt_logger = trt.Logger(trt.Logger.WARNING)
         self.trt_runtime = trt.Runtime(self.trt_logger)
         self.trt_engine = None
+
+        if self.engine_path.endswith(".onnx"):
+            new_path = self.engine_path.replace(".onnx", "_cache.engine")
+            assert self.GenerateEngineFromOnnx(
+                self.engine_path,
+                new_path,
+                build_args=build_args,
+            ), "fail to build engine"
+
+            self.engine_path = new_path
+
         with open(self.engine_path, "rb") as f:
             self.trt_engine = self.trt_runtime.deserialize_cuda_engine(f.read())
 
@@ -127,13 +135,6 @@ class TensorRTExecutor(ModelExectuor):
                 desc.dynamic_desc[type_str] = [
                     int(dim) for dim in self.trt_context.get_tensor_shape(desc.name)
                 ]
-                print(
-                    f"add {type_str} {desc.name}: {self.trt_context.get_tensor_shape(desc.name)}"
-                )
-
-                print(
-                    f"{type_str} {desc.name}: {desc.dynamic_desc}, {id(desc)} {id(desc.dynamic_desc)}, {id(desc.dynamic_desc[type_str])}"
-                )
 
         # self.cuda_ctx_pushed = False
 
@@ -156,6 +157,29 @@ class TensorRTExecutor(ModelExectuor):
                 self.cuda_stream,
             )
             self.outputs_mem.append(mem)
+
+    def GenerateEngineFromOnnx(
+        self, onnx_path: str, engine_path, build_args: Dict = {}
+    ) -> bool:
+        if os.path.exists(engine_path):
+            return True
+
+        print(
+            f"Tips: The engine is currently being compiled and it may take several minutes. Of course, it only occurs during the first execution. You can also simply provide engine instead of onnx"
+        )
+
+        if build_args is None:
+            build_args = {}
+
+        return save_engine_mixed_inputs(
+            onnx_file_path=onnx_path,
+            trt_model_path=engine_path,
+            max_workspace_size=build_args.get("max_workspace_size", 10 << 30),
+            fp16_mode=build_args.get("fp16_mode", True),
+            int8_mode=build_args.get("int8_mode", False),
+            dynamic_axes=build_args.get("dynamic_axes", None),
+            calibrator=build_args.get("calibrator", None),
+        )
 
     def SetInputShapes(self, shapes: Dict[str, List[int]] | List[List[int]]):
         if isinstance(shapes, list):
