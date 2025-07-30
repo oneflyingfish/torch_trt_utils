@@ -59,6 +59,9 @@ class OnnxRuntimeExecutor(ModelExectuor):
                 )
             )
 
+        if int(os.environ.get("EXECUTOR_DEBUG", 0)) > 0:
+            self.PrintIODesc()
+
     def Inference(self, inputs: list, output_type="numpy") -> list:
         assert self.ort_session is not None, "executor not init"
 
@@ -68,7 +71,7 @@ class OnnxRuntimeExecutor(ModelExectuor):
         ort_inputs = {}
         assert len(inputs) == len(
             self.GetModelInputDesc()
-        ), f"expected {len(input_desc)} inputs, get f{len(inputs)}"
+        ), f"expected {len(input_desc)} inputs, get {len(inputs)}"
 
         for idx, value in enumerate(inputs):
             ort_inputs[input_desc[idx].name] = (

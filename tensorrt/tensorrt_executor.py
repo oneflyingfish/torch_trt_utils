@@ -13,6 +13,8 @@ from ytools.tensorrt import save_engine_mixed_inputs
 
 class TensorRTExecutor(ModelExectuor):
     def __init__(self, model_paths: List[str] | str = [], cuda_id=0, build_args={}):
+        self.torch_stream = None
+
         if cuda_id != 0:
             print(
                 f"warning: device!=0 may meet error at this time, use export CUDA_VISIBLE_DEVICES={cuda_id} instead is suggested."
@@ -110,14 +112,14 @@ class TensorRTExecutor(ModelExectuor):
                 )
                 self.name_to_index[name] = len(self.inputs_desc)
                 self.inputs_desc.append(desc)
-                self.current_inputs_shape = {f"{name}": None}
+                self.current_inputs_shape[name] = None
 
             elif io_mode == trt.TensorIOMode.OUTPUT:
                 desc = TensorDesc(name=name, shape=shape, dtype=dtype)
 
                 self.name_to_index[name] = len(self.outputs_desc)
                 self.outputs_desc.append(desc)
-                self.current_outputs_shape = {f"{name}": None}
+                self.current_outputs_shape[name] = None
 
             else:
                 print(f"warning: unknown io_tensor, name={name}, io_mode={io_mode}")
@@ -158,10 +160,13 @@ class TensorRTExecutor(ModelExectuor):
             )
             self.outputs_mem.append(mem)
 
+        if int(os.environ.get("EXECUTOR_DEBUG", 0)) > 0:
+            self.PrintIODesc()
+
     def GenerateEngineFromOnnx(
         self, onnx_path: str, engine_path, build_args: Dict = {}
     ) -> bool:
-        if os.path.exists(engine_path):
+        if os.path.exists(engine_path) and build_args.get("use_cache", True):
             return True
 
         print(

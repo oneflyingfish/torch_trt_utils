@@ -126,7 +126,7 @@ class TensorDesc:
             return f'name="{self.name}", shape={self.shape}, dtype={self.dtype}, dynamic_desc={self.dynamic_desc}'
         else:
             return (
-                f'name="{self.name}", shape={self.shape}, dtype={self.dtype}, dynamic'
+                f'name="{self.name}", shape={self.shape}, dtype={self.dtype}'
             )
 
 
