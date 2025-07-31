@@ -1,4 +1,10 @@
-import pycuda.autoinit
+import torch
+
+torch.cuda.init()
+dummy = torch.tensor([0]).cuda()
+del dummy
+
+# import pycuda.autoinit
 import pycuda.driver as cuda
 
 from .memory import HostDeviceMem

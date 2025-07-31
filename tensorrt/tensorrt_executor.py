@@ -1,5 +1,6 @@
 import torch
-import pycuda.autoinit
+
+# import pycuda.autoinit
 import pycuda.driver as cuda
 from typing import List, Tuple, Dict
 import numpy as np
@@ -9,11 +10,14 @@ import os
 from typing import Optional, List
 from ..executor import ModelExectuor, TensorDesc, TensorDataType
 from ytools.tensorrt import save_engine_mixed_inputs
+import threading
 
 
 class TensorRTExecutor(ModelExectuor):
     def __init__(self, model_paths: List[str] | str = [], cuda_id=0, build_args={}):
         self.torch_stream = None
+        self.cuda_ctx = None
+        self.inference_lock = threading.Lock()
 
         if cuda_id != 0:
             print(
@@ -35,8 +39,11 @@ class TensorRTExecutor(ModelExectuor):
 
         # cuda.init()
         self.gpu_id = cuda_id
-        # self.gpu = cuda.Device(self.gpu_id)
-        # self.cuda_ctx = self.gpu.make_context()
+        self.gpu = cuda.Device(self.gpu_id)
+        self.cuda_ctx = (
+            self.gpu.retain_primary_context()
+        )  # attach to primary context that torch already created
+        self.cuda_ctx.push()
 
         self.trt_logger = trt.Logger(trt.Logger.WARNING)
         self.trt_runtime = trt.Runtime(self.trt_logger)
@@ -162,6 +169,7 @@ class TensorRTExecutor(ModelExectuor):
 
         if int(os.environ.get("EXECUTOR_DEBUG", 0)) > 0:
             self.PrintIODesc()
+        self.pop_ctx()
 
     def GenerateEngineFromOnnx(
         self, onnx_path: str, engine_path, build_args: Dict = {}
@@ -219,6 +227,8 @@ class TensorRTExecutor(ModelExectuor):
         """
         assert self.trt_context is not None, "executor not init"
 
+        self.inference_lock.acquire()
+        self.push_ctx()
         input_desc = self.GetModelInputDesc()
 
         assert len(inputs) == len(
@@ -238,11 +248,17 @@ class TensorRTExecutor(ModelExectuor):
         )
 
         if output_type == "numpy":
-            return [mem.read_numpy() for mem in self.outputs_mem]
+            result = [mem.read_numpy() for mem in self.outputs_mem]
         elif output_type == "torch":
-            return [mem.read_torch() for mem in self.outputs_mem]
+            result = [mem.read_torch() for mem in self.outputs_mem]
         else:
+            self.pop_ctx()
+            self.inference_lock.release()
             raise Exception("unsupport output_type")
+        
+        self.pop_ctx()
+        self.inference_lock.release()
+        return result
 
     def GetModelInputDesc(self) -> List[TensorDesc]:
         return self.inputs_desc
@@ -253,11 +269,13 @@ class TensorRTExecutor(ModelExectuor):
     def TrtDataTypeToTensorDataType(self, type) -> TensorDataType:
         return TensorDataType.from_numpy_type(trt.nptype(type))
 
-    # def push_ctx(self):
-    #     self.cuda_ctx.push()
+    def push_ctx(self):
+        if self.cuda_ctx is not None:
+            self.cuda_ctx.push()
 
-    # def pop_ctx(self):
-    #     self.cuda_ctx.pop()
+    def pop_ctx(self):
+        if self.cuda_ctx is not None:
+            self.cuda_ctx.pop()
 
     def Release(self):
         if self.torch_stream is not None:
@@ -273,9 +291,9 @@ class TensorRTExecutor(ModelExectuor):
             self.trt_engine = None
             self.trt_runtime = None
 
-        # if self.cuda_ctx is not None:
-        #     self.cuda_ctx.detach()
-        #     self.cuda_ctx = None
+        if self.cuda_ctx is not None:
+            # self.cuda_ctx.detach()
+            self.cuda_ctx = None
 
     def __del__(self):
         self.Release()
