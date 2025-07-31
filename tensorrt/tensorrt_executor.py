@@ -14,6 +14,9 @@ import threading
 
 
 class TensorRTExecutor(ModelExectuor):
+    '''
+    set $TRT_UUID to distinguish engines
+    '''
     def __init__(self, model_paths: List[str] | str = [], cuda_id=0, build_args={}):
         self.torch_stream = None
         self.cuda_ctx = None
@@ -50,7 +53,15 @@ class TensorRTExecutor(ModelExectuor):
         self.trt_engine = None
 
         if self.engine_path.endswith(".onnx"):
-            new_path = self.engine_path.replace(".onnx", "_cache.engine")
+            uid = (
+                os.environ.get("TRT_UUID", "cache")
+                .replace("\\", "")
+                .replace("/", "")
+                .replace('"', "")
+                .replace("'", "")
+                .strip()[:20]
+            )
+            new_path = self.engine_path.replace(".onnx", f"_{uid}.engine")
             assert self.GenerateEngineFromOnnx(
                 self.engine_path,
                 new_path,
@@ -255,7 +266,7 @@ class TensorRTExecutor(ModelExectuor):
             self.pop_ctx()
             self.inference_lock.release()
             raise Exception("unsupport output_type")
-        
+
         self.pop_ctx()
         self.inference_lock.release()
         return result
