@@ -14,9 +14,10 @@ import threading
 
 
 class TensorRTExecutor(ModelExectuor):
-    '''
+    """
     set $TRT_UUID to distinguish engines
-    '''
+    """
+
     def __init__(self, model_paths: List[str] | str = [], cuda_id=0, build_args={}):
         self.torch_stream = None
         self.cuda_ctx = None
@@ -43,6 +44,7 @@ class TensorRTExecutor(ModelExectuor):
         # cuda.init()
         self.gpu_id = cuda_id
         self.gpu = cuda.Device(self.gpu_id)
+
         self.cuda_ctx = (
             self.gpu.retain_primary_context()
         )  # attach to primary context that torch already created
@@ -84,6 +86,11 @@ class TensorRTExecutor(ModelExectuor):
 
         self.torch_stream = torch.cuda.current_stream()
         self.cuda_stream = cuda.Stream(self.torch_stream.cuda_stream)
+
+        self.work_stream = cuda.Stream()
+        self.work_stream_torch = torch.cuda.ExternalStream(
+            self.work_stream.handle, device=self.torch_device
+        )  # reference to work_stream
 
         # init desc from engine file
         self.inputs_desc = []  # type:List[TensorDesc]
@@ -240,6 +247,12 @@ class TensorRTExecutor(ModelExectuor):
 
         self.inference_lock.acquire()
         self.push_ctx()
+
+        user_stream = torch.cuda.current_stream()
+        self.work_stream_torch.wait_stream(user_stream)
+
+        run_ok = torch.cuda.Event()
+
         input_desc = self.GetModelInputDesc()
 
         assert len(inputs) == len(
@@ -250,23 +263,30 @@ class TensorRTExecutor(ModelExectuor):
 
         for i, tensor in enumerate(inputs):
             if isinstance(tensor, np.ndarray):
-                self.inputs_mem[i].set_numpy(tensor)
+                self.inputs_mem[i].set_numpy(tensor, stream=self.work_stream)
             else:
-                self.inputs_mem[i].set_torch(tensor)
+                self.inputs_mem[i].set_torch(tensor, stream=self.work_stream)
 
         self.trt_context.execute_async_v3(
-            stream_handle=self.cuda_stream.handle,
+            stream_handle=self.work_stream.handle,
         )
 
         if output_type == "numpy":
-            result = [mem.read_numpy() for mem in self.outputs_mem]
+            result = [
+                mem.read_numpy(stream=self.work_stream) for mem in self.outputs_mem
+            ]
         elif output_type == "torch":
-            result = [mem.read_torch() for mem in self.outputs_mem]
+            result = [
+                mem.read_torch(stream=self.work_stream) for mem in self.outputs_mem
+            ]
         else:
+            run_ok.record(self.work_stream_torch)
             self.pop_ctx()
             self.inference_lock.release()
             raise Exception("unsupport output_type")
 
+        run_ok.record(self.work_stream_torch)
+        user_stream.wait_event(run_ok)
         self.pop_ctx()
         self.inference_lock.release()
         return result
@@ -292,11 +312,15 @@ class TensorRTExecutor(ModelExectuor):
         if self.torch_stream is not None:
             self.torch_stream.synchronize()
             self.cuda_stream.synchronize()
+            self.work_stream.synchronize()
+            self.work_stream_torch.synchronize()
+            del self.work_stream_torch
             del self.torch_stream
             del self.trt_context
             del self.trt_engine
             del self.trt_runtime
 
+            self.work_stream_torch = None
             self.torch_stream = None
             self.trt_context = None
             self.trt_engine = None

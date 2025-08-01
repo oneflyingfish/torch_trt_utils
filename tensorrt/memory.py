@@ -52,23 +52,31 @@ class HostDeviceMem(object):
     def ptr(self):
         return int(self.device)
 
-    def set_numpy(self, array: np.ndarray, only_host=False):
+    def set_numpy(self, array: np.ndarray, only_host=False, stream: cuda.Stream = None):
+        if stream is None:
+            stream = self.stream
+
         np.copyto(self.host[: self.element_size()], array.ravel())
         if not only_host:
-            cuda.memcpy_htod_async(int(self.device), self.host, self.stream)
-            self.stream.synchronize()
+            cuda.memcpy_htod_async(int(self.device), self.host, stream)
+            # stream.synchronize()
 
-    def set_torch(self, array: torch.Tensor):
+    def set_torch(self, array: torch.Tensor, stream: cuda.Stream = None):
+        if stream is None:
+            stream = self.stream
         if array.device == torch.device("cpu"):
             self.set_numpy(array.numpy())
         else:
+            with torch.cuda.stream(torch.cuda.ExternalStream(stream.handle)):
+                array = array.contiguous()
+
             cuda.memcpy_dtod_async(
                 int(self.device),
-                array.contiguous().data_ptr(),
+                array.data_ptr(),
                 self.byte_size(),
-                self.stream,
+                stream,
             )
-            self.stream.synchronize()
+            # stream.synchronize()
 
     def numpy2torch_type(self, type) -> torch.dtype:
         torch_type = self.dtype_mapping.get(type)
@@ -76,26 +84,37 @@ class HostDeviceMem(object):
 
         return torch_type
 
-    def read_torch(self, dtype: torch.dtype = None) -> torch.Tensor:
-        result = torch.empty(
-            size=self.current_shape,
-            memory_format=torch.contiguous_format,
-            dtype=self.numpy2torch_type(self.dtype) if dtype is None else dtype,
-            device=f"cuda:0",
-        )
+    def read_torch(
+        self, dtype: torch.dtype = None, stream: cuda.Stream = None
+    ) -> torch.Tensor:
+        if stream is None:
+            stream = self.stream
+
+        stream_torch = torch.cuda.ExternalStream(stream.handle)
+
+        with torch.cuda.stream(stream_torch):
+            result = torch.empty(
+                size=self.current_shape,
+                memory_format=torch.contiguous_format,
+                dtype=self.numpy2torch_type(self.dtype) if dtype is None else dtype,
+                device=f"cuda:0",
+            ).contiguous()
 
         cuda.memcpy_dtod_async(
-            result.contiguous().data_ptr(),
+            result.data_ptr(),
             int(self.device),
             self.byte_size(),
-            self.stream,
+            stream,
         )
-        self.stream.synchronize()
+        # stream.synchronize()
         return result
 
-    def read_numpy(self) -> np.ndarray:
-        cuda.memcpy_dtoh_async(self.host, int(self.device), self.stream)
-        self.stream.synchronize()
+    def read_numpy(self, stream: cuda.Stream = None) -> np.ndarray:
+        if stream is None:
+            stream = self.stream
+
+        cuda.memcpy_dtoh_async(self.host, int(self.device), stream)
+        # stream.synchronize()
 
         return (
             np.array(self.host)[: self.element_size()]
